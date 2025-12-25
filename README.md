@@ -1,5 +1,12 @@
 # Web-Based Game Trilogy Using MediaPipe Hand Tracking Technology
 
+
+|Bomber     |     Archer 1 |     Archer 2| 
+|----------|-----------|--------------------------|
+|![WhatsApp Image 2025-12-25 at 14 54 30 (2)](https://github.com/user-attachments/assets/915058b0-5b82-450c-8238-7cb44e20a3ed)|![WhatsApp Image 2025-12-25 at 14 54 30](https://github.com/user-attachments/assets/8273682f-c7e7-4f02-b1aa-2c0266e7bc04)|![WhatsApp Image 2025-12-25 at 14 54 30 (1)](https://github.com/user-attachments/assets/3446b167-d1a6-45de-b7d0-03a8c1fa6880)
+
+
+
 This repository contains three web-based games that are fully controlled by hand movements (touchless) using Google’s **MediaPipe Hands** library.  
 The project is built with **HTML5, CSS3, and JavaScript**.
 
