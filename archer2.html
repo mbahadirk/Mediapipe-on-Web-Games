@@ -96,14 +96,25 @@
 
         const SCALE = 0.6; 
         const GRAVITY = 0.18;
-        const POWER_SCALE = 0.16;
+        const POWER_SCALE = 0.09;
         const WALL_WIDTH = 50;
 
         let gameState = {
-            arrowsLeft: 20, score: 0,
-            entities: [], enemies: [], platforms: [], clouds: [],
-            archerX: 150, archerY: 0, pivotY: 0,
-            handActive: false, isDrawing: false, pullStrength: 0, currentAngle: 0
+				arrowsLeft: 20,
+				score: 0,
+				gameOver: false,
+				entities: [],
+				enemies: [],
+				platforms: [],
+				clouds: [],
+				archerX: 150,
+				archerY: 0,
+				pivotY: 0,
+				handActive: false,
+				isDrawing: false,
+				pullStrength: 0,
+				currentAngle: 0
+
         };
 
         function resize() {
@@ -281,14 +292,14 @@
 
                 const pullRefX = canvas.width - 150; 
                 const dx_pull = Math.max(-100, pullRefX - mx);
-                const dy_angle = gameState.pivotY - my;
+                const dy_angle = gameState.pivotY - my - 60;
 
-                gameState.currentAngle = Math.atan2(dy_angle, dx_pull + 50);
+                gameState.currentAngle = Math.atan2(dy_angle, dx_pull - 50);
 
                 const distTrigger = Math.hypot(lm[4].x - lm[8].x, lm[4].y - lm[8].y);
                 const isPinched = distTrigger < 0.08;
 
-                if (isPinched) {
+                if (isPinched && !gameState.gameOver) {
                     if (!gameState.isDrawing) { gameState.isDrawing = true; playSFX('stretch'); }
                     gameState.pullStrength = Math.min(dx_pull, 400);
                 } else if (gameState.isDrawing) {
@@ -304,15 +315,38 @@
             }
             previewCtx.restore();
         }
+		function triggerGameOver() {
+			gameState.gameOver = true;
+			document.getElementById('final-score').innerText = gameState.score;
+			document.getElementById('game-over-overlay').classList.remove('hidden');
+		}
 
         function fireArrow() {
-            if (gameState.arrowsLeft <= 0) return;
-            const p = gameState.pullStrength * POWER_SCALE;
-            const vx = Math.cos(gameState.currentAngle) * p;
-            const vy = Math.sin(gameState.currentAngle) * p;
-            gameState.entities.push(new Arrow(gameState.archerX + (40 * SCALE), gameState.pivotY, vx, vy, gameState.currentAngle));
-            gameState.arrowsLeft--; playSFX('release'); updateUI();
-        }
+			if (gameState.arrowsLeft <= 0 || gameState.gameOver) return;
+
+			const p = gameState.pullStrength * POWER_SCALE;
+			const vx = Math.cos(gameState.currentAngle) * p;
+			const vy = Math.sin(gameState.currentAngle) * p;
+
+			gameState.entities.push(
+				new Arrow(
+					gameState.archerX + (40 * SCALE),
+					gameState.pivotY,
+					vx,
+					vy,
+					gameState.currentAngle
+				)
+			);
+
+			gameState.arrowsLeft--;
+			playSFX('release');
+			updateUI();
+
+			if (gameState.arrowsLeft === 0) {
+				triggerGameOver();
+			}
+		}
+
 
         hands.onResults(onResults);
         new Camera(videoElement, { onFrame: async () => { await hands.send({image: videoElement}); }, width: 640, height: 480 }).start();
@@ -331,6 +365,23 @@
             ctx.beginPath(); ctx.moveTo(0, -70 * SCALE); ctx.lineTo(15 * SCALE, -50 * SCALE); ctx.stroke();
             ctx.restore();
         }
+		function resetGame() {
+			gameState.arrowsLeft = 20;
+			gameState.score = 0;
+			gameState.gameOver = false;
+			gameState.entities = [];
+
+			gameState.enemies.forEach((e, i) => {
+				e.alive = true;
+				e.isPinned = false;
+				e.isBeingCarried = false;
+				e.x = gameState.platforms[i].x + gameState.platforms[i].w / 2;
+				e.y = gameState.platforms[i].y;
+			});
+
+			updateUI();
+			document.getElementById('game-over-overlay').classList.add('hidden');
+		}
 
         function drawBowComplex(ctx, px, py, angle, pull) {
             ctx.save();
@@ -429,6 +480,20 @@
         }
 
         window.onload = () => { resize(); loop(); };
+		
     </script>
+<div id="game-over-overlay"
+     class="hidden fixed inset-0 bg-black/80 flex items-center justify-center z-[200]">
+  <div class="bg-slate-900 p-8 rounded-3xl border border-white/10 text-center shadow-2xl">
+    <h2 class="text-3xl font-black text-yellow-400 mb-4">GAME OVER</h2>
+    <p class="text-slate-300 mb-2">Your Score</p>
+    <p id="final-score" class="text-4xl font-black text-white mb-6">0</p>
+    <button onclick="resetGame()"
+            class="px-6 py-3 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-black font-black transition">
+      RESET
+    </button>
+  </div>
+</div>
+
 </body>
 </html>
