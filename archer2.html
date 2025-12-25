@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Elite Archery - Kesin Hitbox ve Respawn Çözümü</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <style>
+        body { margin: 0; overflow: hidden; background: #0f172a; font-family: 'Segoe UI', sans-serif; touch-action: none; }
+        canvas { display: block; }
+        .video-input { visibility: hidden; position: absolute; }
+        
+        .camera-preview {
+            position: absolute; top: 10px; left: 50%; transform: translateX(-50%); 
+            width: 160px; height: 120px;
+            border: 2px solid rgba(56, 189, 248, 0.5); border-radius: 12px; background: #000;
+            overflow: hidden; z-index: 50; box-shadow: 0 4px 20px rgba(0,0,0,0.8);
+            backdrop-filter: blur(5px);
+        }
+        .camera-preview canvas { width: 100%; height: 100%; transform: scaleX(-1); }
+        
+        #loading-overlay {
+            position: fixed; inset: 0; background: #0f172a;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            z-index: 100; color: white;
+        }
+        .loader {
+            border: 4px solid #1e293b; border-top: 4px solid #38bdf8;
+            border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite;
+            margin-bottom: 20px;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+
+    <div id="loading-overlay">
+        <div class="loader"></div>
+        <h1 class="text-xl font-bold mb-2 text-cyan-400">Archery Elite: Battle</h1>
+        <p class="text-slate-400 text-sm italic">Sistemler optimize ediliyor...</p>
+    </div>
+
+    <video class="video-input"></video>
+    <canvas id="gameCanvas"></canvas>
+
+    <div class="absolute top-4 left-4 pointer-events-none">
+        <div class="bg-slate-900/90 backdrop-blur-md p-4 rounded-2xl shadow-2xl border border-white/10">
+            <h2 class="text-lg font-black text-cyan-400 tracking-widest uppercase italic text-center">ELITE ARCHERY</h2>
+            <div class="mt-2 flex gap-6">
+                <div class="text-center">
+                    <p class="text-[9px] text-slate-400 uppercase font-black">OK</p>
+                    <p id="arrow-display" class="text-2xl font-black text-white">20</p>
+                </div>
+                <div class="text-center border-l border-white/10 pl-6">
+                    <p class="text-[9px] text-slate-400 uppercase font-black">SKOR</p>
+                    <p id="score-display" class="text-2xl font-black text-yellow-500">0</p>
+                </div>
+            </div>
+            <div id="status-ui" class="mt-3 flex items-center gap-2">
+                <div id="status-dot" class="w-2 h-2 rounded-full bg-red-500"></div>
+                <span id="status-text" class="text-[9px] font-bold text-slate-400 uppercase">KAMERA BEKLENİYOR</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="camera-preview">
+        <canvas id="previewCanvas"></canvas>
+    </div>
+
+    <script>
+        const sfx = {
+            release: new Audio('https://assets.mixkit.co/active_storage/sfx/2568/2568-preview.mp3'),
+            hit: new Audio('https://assets.mixkit.co/active_storage/sfx/133/133-preview.mp3'),
+            stretch: new Audio('https://assets.mixkit.co/active_storage/sfx/599/599-preview.mp3')
+        };
+
+        function playSFX(name) {
+            try {
+                const sound = sfx[name].cloneNode();
+                sound.volume = 0.4;
+                sound.play();
+            } catch(e) {}
+        }
+
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const previewCanvas = document.getElementById('previewCanvas');
+        const previewCtx = previewCanvas.getContext('2d');
+        const videoElement = document.querySelector('.video-input');
+
+        const SCALE = 0.6; 
+        const GRAVITY = 0.18;
+        const POWER_SCALE = 0.16;
+        const WALL_WIDTH = 50;
+
+        let gameState = {
+            arrowsLeft: 20, score: 0,
+            entities: [], enemies: [], platforms: [], clouds: [],
+            archerX: 150, archerY: 0, pivotY: 0,
+            handActive: false, isDrawing: false, pullStrength: 0, currentAngle: 0
+        };
+
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            previewCanvas.width = 640;
+            previewCanvas.height = 480;
+            gameState.archerY = canvas.height * 0.75;
+            gameState.pivotY = gameState.archerY - (60 * SCALE);
+            initGame();
+        }
+        window.addEventListener('resize', resize);
+
+        function initGame() {
+            gameState.clouds = Array.from({length: 6}, () => ({
+                x: Math.random() * canvas.width,
+                y: Math.random() * canvas.height * 0.4,
+                sp: 0.1 + Math.random() * 0.2,
+                sz: 40 + Math.random() * 60
+            }));
+
+            gameState.platforms = [
+                { x: canvas.width * 0.55, y: canvas.height * 0.35, w: 120, h: 12 },
+                { x: canvas.width * 0.70, y: canvas.height * 0.60, w: 120, h: 12 },
+                { x: canvas.width * 0.48, y: canvas.height * 0.78, w: 120, h: 12 }
+            ];
+
+            gameState.enemies = gameState.platforms.map((p, i) => ({
+                id: i,
+                x: p.x + p.w / 2,
+                y: p.y,
+                alive: true,
+                isPinned: false,
+                isBeingCarried: false,
+                pinnedAtX: 0,
+                pinnedAtY: 0,
+                pinAngle: 0
+            }));
+        }
+
+        class Arrow {
+            constructor(x, y, vx, vy, angle) {
+                this.x = x; this.y = y;
+                this.vx = vx; this.vy = vy;
+                this.angle = angle;
+                this.isStuck = false;
+                this.len = 90 * SCALE;
+                this.life = 600;
+                this.pinnedEnemy = null;
+            }
+
+            update() {
+                if (this.isStuck) { this.life--; return; }
+
+                this.vy += GRAVITY;
+                this.x += this.vx;
+                this.y += this.vy;
+                this.angle = Math.atan2(this.vy, this.vx);
+
+                if (this.pinnedEnemy) {
+                    this.pinnedEnemy.x = this.x;
+                    this.pinnedEnemy.y = this.y + (50 * SCALE);
+                    this.pinnedEnemy.pinAngle = this.angle;
+                }
+
+                // Duvar Kontrolü
+                if (this.x > canvas.width - WALL_WIDTH) {
+                    this.x = canvas.width - WALL_WIDTH;
+                    this.isStuck = true;
+                    this.vx = 0; this.vy = 0;
+                    playSFX('hit');
+                    
+                    if (this.pinnedEnemy) {
+                        this.pinnedEnemy.isPinned = true;
+                        this.pinnedEnemy.isBeingCarried = false;
+                        this.pinnedEnemy.pinnedAtX = this.x;
+                        this.pinnedEnemy.pinnedAtY = this.y + (50 * SCALE);
+                        
+                        const enemyId = this.pinnedEnemy.id;
+                        setTimeout(() => {
+                            const e = gameState.enemies.find(en => en.id === enemyId);
+                            if (e) {
+                                e.alive = true; 
+                                e.isPinned = false; 
+                                e.isBeingCarried = false;
+                                e.x = gameState.platforms[enemyId].x + gameState.platforms[enemyId].w / 2;
+                                e.y = gameState.platforms[enemyId].y;
+                            }
+                        }, 4000);
+                        this.pinnedEnemy = null;
+                    }
+                }
+
+                // Zemin Kontrolü
+                if (this.y > canvas.height - 50) {
+                    this.y = canvas.height - 50; this.isStuck = true; playSFX('hit');
+                    if (this.pinnedEnemy) {
+                        const enemyRef = this.pinnedEnemy;
+                        enemyRef.alive = false;
+                        enemyRef.isBeingCarried = false;
+                        const id = enemyRef.id;
+                        setTimeout(() => {
+                            const e = gameState.enemies.find(en => en.id === id);
+                            if(e) { 
+                                e.alive = true; 
+                                e.isPinned = false;
+                                e.isBeingCarried = false;
+                                e.x = gameState.platforms[id].x + gameState.platforms[id].w / 2; 
+                                e.y = gameState.platforms[id].y; 
+                            }
+                        }, 2000);
+                        this.pinnedEnemy = null;
+                    }
+                }
+
+                // Hitbox Kontrolü - Sağlamlaştırılmış Yakalama Mantığı
+                if (!this.pinnedEnemy) {
+                    // Sadece kriterlere uyan İLK düşmanı bulur
+                    const target = gameState.enemies.find(e => 
+                        e.alive && !e.isPinned && !e.isBeingCarried &&
+                        this.x > e.x - (30 * SCALE) && this.x < e.x + (30 * SCALE) &&
+                        this.y > e.y - (110 * SCALE) && this.y < e.y
+                    );
+
+                    if (target) {
+                        this.pinnedEnemy = target;
+                        target.alive = false; 
+                        target.isBeingCarried = true;
+                        gameState.score += 150;
+                        playSFX('hit');
+                        updateUI();
+                    }
+                }
+            }
+
+            draw(ctx) {
+                if (this.pinnedEnemy) {
+                    drawStickman(ctx, this.x, this.pinnedEnemy.y, '#ef4444', true, this.angle);
+                }
+
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                ctx.rotate(this.angle);
+                ctx.strokeStyle = '#f1f5f9'; ctx.lineWidth = 3;
+                ctx.beginPath(); ctx.moveTo(-this.len/2, 0); ctx.lineTo(this.len/2, 0); ctx.stroke();
+                ctx.fillStyle = '#94a3b8'; ctx.beginPath(); ctx.moveTo(this.len/2, 0); 
+                ctx.lineTo(this.len/2-12*SCALE, -6*SCALE); ctx.lineTo(this.len/2-12*SCALE, 6*SCALE); ctx.closePath(); ctx.fill();
+                ctx.restore();
+            }
+        }
+
+        const hands = new Hands({locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
+        hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.7 });
+
+        function onResults(results) {
+            document.getElementById('loading-overlay').style.display = 'none';
+            const statusDot = document.getElementById('status-dot');
+            const statusText = document.getElementById('status-text');
+
+            previewCtx.save();
+            previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+            previewCtx.drawImage(results.image, 0, 0, previewCanvas.width, previewCanvas.height);
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                gameState.handActive = true;
+                statusDot.className = "w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_#22c55e]";
+                statusText.innerText = "SİSTEM HAZIR";
+
+                const lm = results.multiHandLandmarks[0];
+                drawConnectors(previewCtx, lm, HAND_CONNECTIONS, {color: '#00d2ff', lineWidth: 4});
+                drawLandmarks(previewCtx, lm, {color: '#ff4d4d', lineWidth: 1, radius: 3});
+
+                const mx = (1 - lm[9].x) * canvas.width;
+                const my = lm[9].y * canvas.height;
+
+                const pullRefX = canvas.width - 150; 
+                const dx_pull = Math.max(-100, pullRefX - mx);
+                const dy_angle = gameState.pivotY - my;
+
+                gameState.currentAngle = Math.atan2(dy_angle, dx_pull + 50);
+
+                const distTrigger = Math.hypot(lm[4].x - lm[8].x, lm[4].y - lm[8].y);
+                const isPinched = distTrigger < 0.08;
+
+                if (isPinched) {
+                    if (!gameState.isDrawing) { gameState.isDrawing = true; playSFX('stretch'); }
+                    gameState.pullStrength = Math.min(dx_pull, 400);
+                } else if (gameState.isDrawing) {
+                    fireArrow();
+                    gameState.isDrawing = false;
+                    gameState.pullStrength = 0;
+                }
+            } else {
+                gameState.handActive = false;
+                statusDot.className = "w-2 h-2 rounded-full bg-red-500 animate-pulse";
+                statusText.innerText = "EL ARANIYOR";
+                gameState.isDrawing = false;
+            }
+            previewCtx.restore();
+        }
+
+        function fireArrow() {
+            if (gameState.arrowsLeft <= 0) return;
+            const p = gameState.pullStrength * POWER_SCALE;
+            const vx = Math.cos(gameState.currentAngle) * p;
+            const vy = Math.sin(gameState.currentAngle) * p;
+            gameState.entities.push(new Arrow(gameState.archerX + (40 * SCALE), gameState.pivotY, vx, vy, gameState.currentAngle));
+            gameState.arrowsLeft--; playSFX('release'); updateUI();
+        }
+
+        hands.onResults(onResults);
+        new Camera(videoElement, { onFrame: async () => { await hands.send({image: videoElement}); }, width: 640, height: 480 }).start();
+
+        function drawStickman(ctx, x, y, color, isEnemy = false, angle = 0) {
+            ctx.save();
+            ctx.translate(x, y);
+            if(angle !== 0) ctx.rotate(angle + Math.PI/2);
+            
+            ctx.strokeStyle = color; ctx.lineWidth = 4 * SCALE; ctx.lineCap = 'round';
+            ctx.beginPath(); ctx.arc(0, -90 * SCALE, 12 * SCALE, 0, Math.PI * 2); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(0, -78 * SCALE); ctx.lineTo(0, -40 * SCALE); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(0, -40 * SCALE); ctx.lineTo(-12 * SCALE, 0); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(0, -40 * SCALE); ctx.lineTo(12 * SCALE, 0); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(0, -70 * SCALE); ctx.lineTo(-15 * SCALE, -50 * SCALE); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(0, -70 * SCALE); ctx.lineTo(15 * SCALE, -50 * SCALE); ctx.stroke();
+            ctx.restore();
+        }
+
+        function drawBowComplex(ctx, px, py, angle, pull) {
+            ctx.save();
+            ctx.strokeStyle = '#64748b'; ctx.lineWidth = 4 * SCALE; ctx.lineCap = 'round';
+            const handX = px + Math.cos(angle) * (45 * SCALE);
+            const handY = py + Math.sin(angle) * (45 * SCALE);
+            ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(handX, handY); ctx.stroke();
+            ctx.save();
+            ctx.translate(handX, handY);
+            ctx.rotate(angle);
+            ctx.strokeStyle = '#b45309'; ctx.lineWidth = 6 * SCALE;
+            ctx.beginPath(); ctx.arc(0, 0, 80 * SCALE, -Math.PI/2, Math.PI/2); ctx.stroke();
+            ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1 * SCALE;
+            ctx.beginPath(); ctx.moveTo(0, -80 * SCALE); ctx.lineTo(-pull * 0.4, 0); ctx.lineTo(0, 80 * SCALE); ctx.stroke();
+            if (gameState.isDrawing) {
+                ctx.save(); ctx.translate(-pull * 0.4, 0);
+                ctx.strokeStyle = '#f1f5f9'; ctx.lineWidth = 2.5 * SCALE;
+                ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(100 * SCALE, 0); ctx.stroke();
+                ctx.restore();
+            }
+            ctx.restore(); ctx.restore();
+        }
+
+        function drawTrajectory(startX, startY, vx, vy) {
+            ctx.save();
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+            let tx = startX, ty = startY, tvx = vx, tvy = vy;
+            for(let i=0; i<40; i++) {
+                tvy += GRAVITY; tx += tvx; ty += tvy;
+                if (i % 3 === 0) { ctx.beginPath(); ctx.arc(tx, ty, 2.5, 0, Math.PI*2); ctx.fill(); }
+                if (ty > canvas.height - 50 || tx > canvas.width) break;
+            }
+            ctx.restore();
+        }
+
+        function updateUI() {
+            document.getElementById('arrow-display').innerText = gameState.arrowsLeft;
+            document.getElementById('score-display').innerText = gameState.score;
+        }
+
+        function loop() {
+            const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+            grad.addColorStop(0, '#1e293b'); grad.addColorStop(1, '#0f172a');
+            ctx.fillStyle = grad; ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            gameState.clouds.forEach(c => {
+                c.x += c.sp; if(c.x > canvas.width + 100) c.x = -100;
+                ctx.fillStyle = 'rgba(255,255,255,0.05)';
+                ctx.beginPath(); ctx.ellipse(c.x, c.y, c.sz, c.sz*0.5, 0, 0, Math.PI*2); ctx.fill();
+            });
+
+            ctx.fillStyle = '#334155';
+            ctx.fillRect(canvas.width - WALL_WIDTH, 0, WALL_WIDTH, canvas.height);
+            ctx.strokeStyle = '#475569'; ctx.lineWidth = 4;
+            ctx.strokeRect(canvas.width - WALL_WIDTH, 0, WALL_WIDTH, canvas.height);
+
+            ctx.fillStyle = '#1e293b'; ctx.fillRect(0, canvas.height-50, canvas.width, 50);
+
+            gameState.platforms.forEach(p => {
+                ctx.fillStyle = '#334155';
+                ctx.beginPath(); ctx.roundRect(p.x, p.y, p.w, p.h, 4); ctx.fill();
+            });
+
+            // Güvenlik ve Emniyet Mekanizması: Stuck (Takılı kalmış) düşmanları temizler
+            gameState.enemies.forEach(e => {
+                // Eğer bir düşman ölü görünüyor ama şu an hiçbir ok tarafından taşınmıyorsa, respawn et
+                const isBeingCarriedAnywhere = gameState.entities.some(ent => ent.pinnedEnemy && ent.pinnedEnemy.id === e.id);
+                if (!e.alive && !e.isPinned && !isBeingCarriedAnywhere) {
+                    e.alive = true;
+                    e.isBeingCarried = false;
+                    e.isPinned = false;
+                    e.x = gameState.platforms[e.id].x + gameState.platforms[e.id].w / 2;
+                    e.y = gameState.platforms[e.id].y;
+                }
+
+                if (e.alive && !e.isBeingCarried) drawStickman(ctx, e.x, e.y, '#ef4444', true);
+                if (e.isPinned) drawStickman(ctx, e.pinnedAtX, e.pinnedAtY, '#991b1b', true, e.pinAngle);
+            });
+
+            gameState.entities = gameState.entities.filter(e => e.life > 0);
+            gameState.entities.forEach(e => { e.update(); e.draw(ctx); });
+
+            drawStickman(ctx, gameState.archerX, gameState.archerY, '#22d3ee');
+
+            if (gameState.handActive) {
+                if (gameState.isDrawing) {
+                    const p = gameState.pullStrength * POWER_SCALE;
+                    drawTrajectory(gameState.archerX + (40 * SCALE), gameState.pivotY, Math.cos(gameState.currentAngle)*p, Math.sin(gameState.currentAngle)*p);
+                }
+                drawBowComplex(ctx, gameState.archerX, gameState.pivotY, gameState.currentAngle, gameState.pullStrength);
+            } else {
+                drawBowComplex(ctx, gameState.archerX, gameState.pivotY, 0, 0);
+            }
+
+            requestAnimationFrame(loop);
+        }
+
+        window.onload = () => { resize(); loop(); };
+    </script>
+</body>
+</html>
